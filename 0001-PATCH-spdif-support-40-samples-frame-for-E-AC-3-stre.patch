@@ -1,0 +1,55 @@
+From 2c4ba4326a55e15f852535e6bdec2227c9e94c79 Mon Sep 17 00:00:00 2001
+From: chandan-reach <chandan.outreachbugi@gmail.com>
+Date: Sat, 12 Apr 2025 16:11:58 +0530
+Subject: [PATCH] spdifenc: support 40 samples/frame for E-AC-3 streams
+
+This patch adds support for E-AC-3 streams that use 40-sample (8-block)
+frames in the SPDIF muxer. This format is valid but not currently
+handled by FFmpeg.
+
+According to the E-AC-3 specification, `numblkscod == 0` implies 8
+audio blocks per syncframe, which translates to 40-sample frames. These
+were previously unrecognized and could result in incorrect `repeat`
+calculation or rejection of valid streams.
+
+The added logic ensures these frames are properly interpreted and handled.
+
+### How to Reproduce the Issue
+
+To test this patch, try muxing a raw E-AC-3 stream that uses 40-sample
+frames (e.g., extracted from Blu-ray or Dolby Digital Plus content).
+Without this patch, such streams may trigger a failure or generate
+incorrect SPDIF output.
+
+Signed-off-by: chandan-reach <chandan.outreachbugi@gmail.com>
+---
+ libavformat/spdifenc.c | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/libavformat/spdifenc.c b/libavformat/spdifenc.c
+index ab3f73da0d..2aa230e4e6 100644
+--- a/libavformat/spdifenc.c
++++ b/libavformat/spdifenc.c
+@@ -127,8 +127,18 @@ static int spdif_header_eac3(AVFormatContext *s, AVPacket *pkt)
+     uint8_t *tmp;
+ 
+     int bsid = pkt->data[5] >> 3;
+-    if (bsid > 10 && (pkt->data[4] & 0xc0) != 0xc0) /* fscod */
+-        repeat = eac3_repeat[(pkt->data[4] & 0x30) >> 4]; /* numblkscod */
++    if (bsid > 10 && (pkt->data[4] & 0xc0) != 0xc0) { /* fscod */
++        int numblkscod = (pkt->data[4] & 0x30) >> 4;
++        if (numblkscod == 0) {
++            /* Special case for 8-block (40-sample) frames */
++            repeat = 8;
++        } else if (numblkscod < 4) {
++            repeat = eac3_repeat[numblkscod];
++        } else {
++            av_log(s, AV_LOG_ERROR, "Invalid numblkscod value: %d\n", numblkscod);
++            return AVERROR_INVALIDDATA;
++        }
++    }
+ 
+     tmp = av_fast_realloc(ctx->hd_buf[0], &ctx->hd_buf_size, ctx->hd_buf_filled + pkt->size);
+     if (!tmp)
+-- 
+2.47.0.windows.1
